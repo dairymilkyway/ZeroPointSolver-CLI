@@ -46,16 +46,24 @@ class ZeroSolverClient:
                     continue
                 detail = data.get("error", r.text[:200])
                 raise SystemExit(f"Error 429: {detail}")
-            if r.status_code == 503:
+            if r.status_code in (500, 503):
                 if attempt < MAX_RETRIES:
                     wait = 5 * (attempt + 1)
-                    print(f"Service unavailable. Retrying in {wait}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                    print(f"Service temporarily unavailable ({r.status_code}). Retrying in {wait}s (attempt {attempt + 1}/{MAX_RETRIES})...")
                     time.sleep(wait)
                     continue
-                raise SystemExit("Error 503: ZeroSolver service temporarily unavailable")
+                raise SystemExit(f"Error {r.status_code}: ZeroSolver service temporarily unavailable")
             if r.status_code == 400:
                 data = r.json()
                 raise SystemExit(f"Error 400: {data.get('error', 'Bad request')}")
+            if r.status_code == 409:
+                data = r.json()
+                print(f"Error 409: {data.get('error', 'Conflict - job may already exist')}")
+                job_id = data.get("job_id")
+                if job_id:
+                    print(f"  Existing Job ID: {job_id}")
+                    return data
+                sys.exit(1)
             r.raise_for_status()
             return r.json()
 
