@@ -39,9 +39,9 @@ class ZeroSolverClient:
             if r.status_code == 429:
                 data = r.json()
                 retry_s = data.get("retryAfterSeconds") or data.get("retryAfterMs") or data.get("retry_after_ms")
-                if isinstance(retry_s, (int, float)) and attempt < MAX_RETRIES:
+                if isinstance(retry_s, (int, float)):
                     wait = retry_s if retry_s < 100 else retry_s / 1000
-                    print(f"Rate limited. Waiting {wait:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                    print(f"  Rate limited — waiting {wait:.0f}s...")
                     time.sleep(wait)
                     continue
                 detail = data.get("error", r.text[:200])
