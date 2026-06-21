@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
+import hashlib
 import os
+import random
+import signal
 import sys
 import time
+
+import requests
 from config import load_zsolver_key, load_faceunlock_key
 from api_client import ZeroSolverClient
 from faceunlock_client import FaceUnlockClient
@@ -40,225 +45,275 @@ def pause():
     input("\nPress Enter to continue...")
 
 
-def print_header(title):
-    clear()
-    print("  ZeroPoint ZeroSolver")
-    print(f"  {'─' * 30}")
-    if title:
-        print(f"  {title}")
-        print()
+# ── ASCII helpers (same style as cli.py) ─────────────
+
+def log(msg=""):
+    print(msg, flush=True)
+
+
+def header(title, width=54):
+    pad = (width - len(title) - 2) // 2
+    sep = "-" * (width - 2)
+    log()
+    log(f"  .{sep}.")
+    log(f"  |{' ' * pad} {title} {' ' * (width - pad - len(title) - 3)}|")
+    log(f"  '{sep}'")
+
+
+def field(key, val, w=20):
+    log(f"    {key:<{w}} {val}")
+
+
+def sep(width=54):
+    log(f"  {'-' * width}")
+
+
+def ok(msg):
+    log(f"   [+] {msg}")
+
+
+def warn(msg):
+    log(f"   [!] {msg}")
+
+
+def badge(status):
+    m = {"pending": "[PENDING]", "processing": "[  ..  ]",
+         "completed": "[ DONE  ]", "failed": "[ FAIL  ]",
+         "cancelled": "[ STOP  ]"}
+    return m.get(status, f"[{status.upper()}]")
+
+
+def progress_bar(p, t, w=20):
+    if t == 0:
+        return "[" + " " * w + "]"
+    filled = int(p / t * w)
+    return "[" + "#" * filled + "." * (w - filled) + "]"
 
 
 def watch_loop(job_id, interval=3):
     while True:
-        data = client.get_status(job_id)
-        status = data["status"]
-        processed = data["processed"]
-        total = data["total_accounts"]
-        solved = data["successful"]
-        already = data["already_solved"]
-        failed = data["failed"]
-        print(f"  [{status.upper()}] {processed}/{total}"
-              f"  + {solved}  o {already}  x {failed}"
-              f"  charged: {data['charged_credits']}")
-        if status in ("completed", "failed", "cancelled"):
-            return data
+        d = client.get_status(job_id)
+        s = d["status"]
+        p, t = d["processed"], d["total_accounts"]
+        ok_, already, fail = d.get("successful", 0), d.get("already_solved", 0), d.get("failed", 0)
+        charged = d.get("charged_credits", "?")
+        bar = progress_bar(p, t)
+        line = f"    {badge(s)}  {bar}  {p:>4}/{t:<4}  +{ok_}  o{already}  x{fail}  ${charged}"
+        if s in ("completed", "failed", "cancelled"):
+            log(line)
+            return d
+        print(line, end="\r", flush=True)
         time.sleep(interval)
 
 
 def watch_loop_fu(job_id, interval=3):
     while True:
-        data = fu_client.get_status(job_id)
-        status = data["status"]
-        processed = data["processed"]
-        total = data["total_accounts"]
-        solved = data.get("successful", 0)
-        failed = data.get("failed", 0)
-        other_failed = data.get("other_failed", 0)
-        print(f"  [{status.upper()}] {processed}/{total}"
-              f"  + {solved} unlocked"
-              f"  x {failed} face failed"
-              f"  other: {other_failed}")
-        if status in ("completed", "failed", "cancelled"):
-            return data
+        d = fu_client.get_status(job_id)
+        s = d["status"]
+        p, t = d["processed"], d["total_accounts"]
+        ok_, fail, other = d.get("successful", 0), d.get("failed", 0), d.get("other_failed", 0)
+        bar = progress_bar(p, t)
+        line = f"    {badge(s)}  {bar}  {p:>4}/{t:<4}  +{ok_}  x{fail}  o{other}"
+        if s in ("completed", "failed", "cancelled"):
+            log(line)
+            return d
+        print(line, end="\r", flush=True)
         time.sleep(interval)
 
 
 def cmd_credits():
-    print_header("CREDIT BALANCE")
+    clear()
+    header("CREDITS")
     data = client.get_credits()
     global _credits_cache
     _credits_cache = data
-    print(f"  Balance:   {data['balance']:.2f} credits")
-    print(f"  Reserved:  {data['reserved']:.2f} credits")
-    print(f"  Effective: {data['effective']:.2f} credits")
-    print()
-    print(f"  In-game solve:       {data['cost_per_success']} credits each")
-    print(f"  Captcha-lock solve:  {data['captcha_lock_cost_per_success']} credits each")
+    field("Balance:", f"{data['balance']:.2f}")
+    field("Reserved:", f"{data['reserved']:.2f}")
+    field("Available:", f"{data['effective']:.2f}")
+    sep()
+    field("In-game solve:", f"{data['cost_per_success']} cr")
+    field("Captcha-lock:", f"{data['captcha_lock_cost_per_success']} cr")
+    log()
     pause()
 
 
 def cmd_submit():
-    print_header("SUBMIT ACCOUNTS")
-    refresh_balance()
-    b = _credits_cache
-    if b:
-        print(f"  Credits: {b['effective']:.2f} available  (Reserved: {b['reserved']:.2f})")
-        print()
+    clear()
     filepath = input(f"  Accounts file [{DEFAULT_ACCOUNTS_FILE}]: ").strip()
     if not filepath:
         filepath = DEFAULT_ACCOUNTS_FILE
     if not os.path.exists(filepath):
-        print(f"\n  Error: {filepath} not found")
+        warn(f"{filepath} not found")
         pause()
         return
     with open(filepath, encoding="utf-8") as f:
         accounts_text = f.read()
     acct_lines = [l for l in accounts_text.strip().splitlines() if l.strip()]
     if not acct_lines:
-        print(f"\n  Error: {filepath} is empty")
+        warn(f"{filepath} is empty")
         pause()
         return
-    print(f"  {len(acct_lines)} accounts loaded")
-    print()
+
+    header("SUBMIT")
+    refresh_balance()
+    if _credits_cache:
+        field("Available", f"{_credits_cache['effective']:.2f} cr")
+    field("Accounts", len(acct_lines))
+    sep()
 
     fu_first = input("  Pre-process with Face Unlock first? [y/N]: ").strip().lower()
 
     if fu_first == "y":
-        print()
-        print("  ── Face Unlock Step ──")
+        header("STEP 1/2 - FACE UNLOCK")
         try:
             refresh_fu_balance()
             if _fu_balance_cache:
-                print(f"  Face Unlock balance: ${_fu_balance_cache['effective']:.2f}")
+                field("FU Balance", f"${_fu_balance_cache['effective']:.2f}")
         except Exception:
             pass
         est_fu = len(acct_lines) * 0.05
-        print(f"  Estimated FU cost: ${est_fu:.2f} max")
-        print()
+        field("Est. FU cost", f"${est_fu:.2f} max")
+        sep()
+        log("    Submitting...")
         fu_data = fu_client.submit(accounts_text)
         fu_job_id = fu_data["job_id"]
-        print(f"  Face Unlock Job ID: {fu_job_id}")
-        print(f"  Total: {fu_data['total_accounts']} | Free: {fu_data.get('db_accounts_count', 0)} | Paid: {fu_data.get('paid_accounts_count', 0)}")
-        print(f"  Estimated cost: ${fu_data['estimated_cost']:.2f}")
+        field("Job ID", fu_job_id)
+        field("Total", fu_data['total_accounts'])
+        field("DB match", fu_data.get('db_accounts_count', 0))
+        field("Paid", fu_data.get('paid_accounts_count', 0))
+        field("Est. cost", f"${fu_data['estimated_cost']:.2f}")
         w = input("\n  Watch face unlock progress? [y/N]: ").strip().lower()
         if w == "y":
-            print()
+            log()
             fu_result = watch_loop_fu(fu_job_id)
             if fu_result["status"] == "completed" and fu_result.get("result_files"):
                 dl = input("  Download face unlock results? [y/N]: ").strip().lower()
                 if dl == "y":
+                    log()
                     for f_info in fu_result["result_files"]:
                         content = fu_client.download(fu_job_id, f_info["filename"])
                         if content is not None:
-                            with open(f_info["filename"], "w", encoding="utf-8") as f:
+                            out = f"{fu_job_id}_{f_info['filename']}"
+                            with open(out, "w", encoding="utf-8") as f:
                                 f.write(content)
-                            print(f"  Downloaded {f_info['filename']}")
-        print()
+                            ok(f"{out}")
+        sep()
 
-    print("  ── Captcha Solve Step ──")
-    print("  Solver type:")
-    print("    1. In-game (default, 0.0025 credits each)")
-    print("    2. Captcha-lock (0.005 credits each)")
+    header("STEP 2/2 - CAPTCHA SOLVE")
+    log("  Solver type:")
+    log("    1. In-game (default, 0.0025 credits each)")
+    log("    2. Captcha-lock (0.005 credits each)")
     st = input("  Choice [1]: ").strip()
     captcha_type = "captchalock" if st == "2" else "ingame"
     rate = 0.005 if st == "2" else 0.0025
     max_cost = len(acct_lines) * rate
-    if b:
-        print(f"\n  Max cost: {max_cost:.4f} credits  |  Available: {b['effective']:.2f}")
-        if max_cost > b["effective"]:
-            print("  ! Not enough credits for this job!")
-    print()
+    if _credits_cache:
+        log()
+        field("Max cost", f"{max_cost:.4f} cr")
+        field("Available", f"{_credits_cache['effective']:.2f} cr")
+        if max_cost > _credits_cache["effective"]:
+            warn("Not enough credits!")
+    log()
+    log("    Submitting...")
     data = client.submit(accounts_text, captcha_type)
     job_id = data["job_id"]
-    print(f"  Job ID: {job_id}")
-    print(f"  Accounts: {data['total_accounts']}")
-    print(f"  Estimated cost: {data['estimated_cost']} credits")
-    print(f"  Cost per success: {data['cost_per_success']} credits")
+    field("Job ID", job_id)
+    field("Accounts", data['total_accounts'])
+    field("Est. cost", f"{data['estimated_cost']} cr")
+    field("Per success", f"{data['cost_per_success']} cr")
     refresh_balance()
     if _credits_cache:
-        print(f"  Balance after reservation: {_credits_cache['effective']:.2f}")
+        field("Remaining", f"{_credits_cache['effective']:.2f} cr")
     w = input("\n  Watch progress? [y/N]: ").strip().lower()
     if w == "y":
-        print()
+        log()
         result = watch_loop(job_id)
         if result["status"] == "completed":
             refresh_balance()
             if _credits_cache:
-                print(f"  Charged: {result['charged_credits']} | New balance: {_credits_cache['effective']:.2f}")
+                log()
+                field("Charged", f"{result['charged_credits']} cr")
+                field("Balance", f"{_credits_cache['effective']:.2f} cr")
             auto = input("  Download results now? [y/N]: ").strip().lower()
             if auto == "y":
+                log()
                 for filename in result.get("result_files", []):
                     content = client.download(job_id, filename)
                     if content is not None:
                         with open(filename, "w", encoding="utf-8") as f:
                             f.write(content)
-                        print(f"  Downloaded {filename}")
-        print()
+                        cnt = len([l for l in content.splitlines() if l.strip()])
+                        ok(f"{filename}  ({cnt} lines)")
+    sep()
     pause()
 
 
 def cmd_status():
-    print_header("JOB STATUS")
+    clear()
+    header("STATUS")
     job_id = input("  Job ID: ").strip()
     if not job_id:
         return
+    field("Job ID", job_id)
+    sep()
     w = input("  Watch progress? [y/N]: ").strip().lower()
-    hit = False
     while True:
-        if hit:
-            clear()
-            print(f"  Job ID: {job_id}\n")
-        hit = False
-        data = client.get_status(job_id)
-        status = data["status"]
-        processed = data["processed"]
-        total = data["total_accounts"]
-        solved = data["successful"]
-        already = data["already_solved"]
-        failed = data["failed"]
-        print(f"  [{status.upper()}] {processed}/{total}"
-              f"  + {solved}  o {already}  x {failed}"
-              f"  charged: {data['charged_credits']}")
-        if status in ("completed", "failed", "cancelled"):
-            if status == "completed" and data.get("result_files"):
-                print(f"  Files: {', '.join(data['result_files'])}")
+        clear()
+        header("STATUS")
+        field("Job ID", job_id)
+        sep()
+        d = client.get_status(job_id)
+        s = d["status"]
+        p, t = d["processed"], d["total_accounts"]
+        bar = progress_bar(p, t)
+        field("Status", s.upper())
+        field("Progress", f"{bar}  {p}/{t}")
+        field("Solved", d["successful"])
+        field("Already", d["already_solved"])
+        field("Failed", d["failed"])
+        field("Charged", f"{d.get('charged_credits', '?')} cr")
+        if s in ("completed", "failed", "cancelled"):
+            if s == "completed" and d.get("result_files"):
+                log(f"    Files: {', '.join(d['result_files'])}")
             break
         if w != "y":
             break
-        hit = True
         time.sleep(3)
     pause()
 
 
 def cmd_download():
-    print_header("DOWNLOAD RESULTS")
+    clear()
+    header("DOWNLOAD")
     job_id = input("  Job ID: ").strip()
     if not job_id:
         return
-    print("  Source:")
-    print("    1. ZeroSolver (captcha)")
-    print("    2. Face Unlock")
+    field("Job ID", job_id)
+    sep()
+    log("  Source:")
+    log("    1. ZeroSolver (captcha)")
+    log("    2. Face Unlock")
     src = input("  Choice [1]: ").strip()
     if src == "2":
         data = fu_client.get_status(job_id)
         if data["status"] != "completed":
-            print(f"\n  Job is {data['status']} — not completed yet.")
+            field("Status", f"{data['status']} — wait")
             pause()
             return
         for f_info in data.get("result_files", []):
             content = fu_client.download(job_id, f_info["filename"])
             if content is not None:
-                with open(f_info["filename"], "w", encoding="utf-8") as f:
+                out = f"{job_id}_{f_info['filename']}"
+                with open(out, "w", encoding="utf-8") as f:
                     f.write(content)
                 lines = len([l for l in content.splitlines() if l.strip()])
-                print(f"\n  Downloaded {f_info['filename']} ({lines} lines)")
+                ok(f"{out}  ({lines} lines)")
             else:
-                print(f"\n  {f_info['filename']}: not found")
+                warn(f"{f_info['filename']}: not found")
     else:
         data = client.get_status(job_id)
         if data["status"] != "completed":
-            print(f"\n  Job is {data['status']} — not completed yet.")
+            field("Status", f"{data['status']} — wait")
             pause()
             return
         for filename in data.get("result_files", []):
@@ -267,141 +322,304 @@ def cmd_download():
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
                 lines = len([l for l in content.splitlines() if l.strip()])
-                print(f"\n  Downloaded {filename} ({lines} lines)")
+                ok(f"{filename}  ({lines} lines)")
             else:
-                print(f"\n  {filename}: not found")
+                warn(f"{filename}: not found")
         if not data.get("result_files"):
-            print("  No result files available.")
+            warn("No result files available.")
     pause()
 
 
 def cmd_cancel():
-    print_header("CANCEL JOB")
+    clear()
+    header("CANCEL")
     job_id = input("  Job ID: ").strip()
     if not job_id:
         return
-    print("  Source:")
-    print("    1. ZeroSolver (captcha)")
-    print("    2. Face Unlock")
+    log("  Source:")
+    log("    1. ZeroSolver (captcha)")
+    log("    2. Face Unlock")
     src = input("  Choice [1]: ").strip()
     if src == "2":
         c = input(f"  Cancel Face Unlock job {job_id}? [y/N]: ").strip().lower()
         if c == "y":
             fu_client.cancel(job_id)
-            print(f"\n  Face Unlock job {job_id} cancelled.")
+            ok(f"Job {job_id} cancelled.")
             refresh_fu_balance()
             if _fu_balance_cache:
-                print(f"  FU Balance: ${_fu_balance_cache['effective']:.2f}")
+                field("FU Balance", f"${_fu_balance_cache['effective']:.2f}")
     else:
         c = input(f"  Cancel ZeroSolver job {job_id}? [y/N]: ").strip().lower()
         if c == "y":
             client.cancel(job_id)
-            print(f"\n  Job {job_id} cancelled.")
+            ok(f"Job {job_id} cancelled.")
             refresh_balance()
             if _credits_cache:
-                print(f"  Balance: {_credits_cache['effective']:.2f} credits")
+                field("Balance", f"{_credits_cache['effective']:.2f} cr")
     pause()
 
 
 def cmd_active():
-    print_header("ACTIVE JOBS")
+    clear()
+    header("ACTIVE JOBS")
     refresh_balance()
     if _credits_cache:
         b = _credits_cache
-        print(f"  Balance: {b['balance']:.2f}  |  Reserved: {b['reserved']:.2f}  |  Available: {b['effective']:.2f}")
-        print()
+        field("Balance", f"{b['balance']:.2f}")
+        field("Reserved", f"{b['reserved']:.2f}")
+        field("Available", f"{b['effective']:.2f}")
+        sep()
+
     data = client.get_active()
     jobs = data.get("jobs", [])
     if not jobs:
-        print("  No active ZeroSolver jobs.")
+        log("    (no active ZeroSolver jobs)")
     else:
-        for job in jobs:
-            print(f"  {job['job_id']}")
-            print(f"    Status: {job['status']}")
-            print(f"    Progress: {job['processed']}/{job['total_accounts']}"
-                  f"  + {job['successful']}"
-                  f"  o {job['already_solved']}"
-                  f"  x {job['failed']}")
-            print()
+        log(f"    {'Job ID':<38} {'Status':<12}  {'Prog':>6}   Results")
+        sep(58)
+        for j in jobs:
+            prog = f"{j['processed']}/{j['total_accounts']}"
+            res = f"+{j['successful']} o{j['already_solved']} x{j['failed']}"
+            log(f"    {j['job_id']:<38} {j['status']:<12}  {prog:>6}   {res}")
 
     try:
         fu_data = fu_client.get_active()
         fu_jobs = fu_data.get("jobs", [])
         if fu_jobs:
-            print("  ── Face Unlock Active Jobs ──")
-            for job in fu_jobs:
-                print(f"  {job['job_id']}")
-                print(f"    Status: {job['status']}  {'(Priority)' if job.get('priority') else '(Standard)'}")
-                print(f"    Progress: {job['processed']}/{job['total_accounts']}"
-                      f"  + {job['successful']}"
-                      f"  x {job.get('failed', 0)}")
-                print()
+            log()
+            log(f"    {'Job ID':<38} {'Status':<12}  {'Prog':>6}   Results")
+            sep(58)
+            for j in fu_jobs:
+                q = "P" if j.get("priority") else "S"
+                prog = f"{j['processed']}/{j['total_accounts']}"
+                res = f"+{j['successful']} x{j.get('failed', 0)}"
+                log(f"    {j['job_id']:<38} {q} {j['status']:<10}  {prog:>6}   {res}")
     except Exception:
         pass
     pause()
 
 
 def cmd_faceunlock():
-    print_header("FACE UNLOCK")
-    refresh_fu_balance()
-    if _fu_balance_cache:
-        print(f"  Balance: ${_fu_balance_cache['effective']:.2f}  (Reserved: ${_fu_balance_cache['reserved']:.2f})")
-        print()
+    clear()
     filepath = input(f"  Accounts file [{DEFAULT_ACCOUNTS_FILE}]: ").strip()
     if not filepath:
         filepath = DEFAULT_ACCOUNTS_FILE
     if not os.path.exists(filepath):
-        print(f"\n  Error: {filepath} not found")
+        warn(f"{filepath} not found")
         pause()
         return
     with open(filepath, encoding="utf-8") as f:
         accounts_text = f.read()
     acct_lines = [l for l in accounts_text.strip().splitlines() if l.strip()]
     if not acct_lines:
-        print(f"\n  Error: {filepath} is empty")
+        warn(f"{filepath} is empty")
         pause()
         return
-    print(f"  {len(acct_lines)} accounts loaded")
-    print("  Queue:")
-    print("    1. Standard ($0.05/acc)")
-    print("    2. Priority ($0.10/acc)")
-    q = input("  Choice [1]: ").strip()
-    priority = q == "2"
-    rate_str = "$0.10" if priority else "$0.05"
-    max_cost = len(acct_lines) * (0.10 if priority else 0.05)
-    if _fu_balance_cache:
-        print(f"\n  Max cost: ${max_cost:.2f}  |  Available: ${_fu_balance_cache['effective']:.2f}")
-        if max_cost > _fu_balance_cache["effective"]:
-            print("  ! Not enough balance for this job!")
-    print()
-    data = fu_client.submit(accounts_text, priority=priority)
-    job_id = data["job_id"]
-    print(f"  Job ID: {job_id}")
-    print(f"  Accounts: {data['total_accounts']}")
-    print(f"  Free (DB): {data.get('db_accounts_count', 0)}")
-    print(f"  Paid: {data.get('paid_accounts_count', 0)}")
-    print(f"  Estimated cost: ${data['estimated_cost']:.2f}")
-    print(f"  Queue: {'Priority' if priority else 'Standard'}")
+
+    header("FACE UNLOCK")
     refresh_fu_balance()
     if _fu_balance_cache:
-        print(f"  Balance after reservation: ${_fu_balance_cache['effective']:.2f}")
+        field("Balance", f"${_fu_balance_cache['effective']:.2f}")
+    field("Accounts", len(acct_lines))
+    log("  Queue:")
+    log("    1. Standard ($0.05/acc)")
+    log("    2. Priority ($0.10/acc)")
+    q = input("  Choice [1]: ").strip()
+    priority = q == "2"
+    rate = 0.10 if priority else 0.05
+    max_cost = len(acct_lines) * rate
+    field("Rate", f"${rate}/acc")
+    field("Max", f"${max_cost:.2f}")
+    if _fu_balance_cache and max_cost > _fu_balance_cache["effective"]:
+        warn("Not enough balance!")
+    sep()
+
+    log("    Submitting...")
+    data = fu_client.submit(accounts_text, priority=priority)
+    job_id = data["job_id"]
+    field("Job ID", job_id)
+    field("Total", data['total_accounts'])
+    field("DB match", data.get('db_accounts_count', 0))
+    field("Paid", data.get('paid_accounts_count', 0))
+    field("Est. cost", f"${data['estimated_cost']:.2f}")
+    field("Queue", "Priority" if priority else "Standard")
+    refresh_fu_balance()
+    if _fu_balance_cache:
+        field("Remaining", f"${_fu_balance_cache['effective']:.2f}")
     w = input("\n  Watch progress? [y/N]: ").strip().lower()
     if w == "y":
-        print()
+        log()
         result = watch_loop_fu(job_id)
         if result["status"] == "completed":
             refresh_fu_balance()
-            print(f"  Unlocked: {result.get('successful', 0)}")
+            log()
+            field("Unlocked", result.get('successful', 0))
+            if _fu_balance_cache:
+                field("Balance", f"${_fu_balance_cache['effective']:.2f}")
             auto = input("  Download results now? [y/N]: ").strip().lower()
             if auto == "y":
+                log()
                 for f_info in result.get("result_files", []):
                     content = fu_client.download(job_id, f_info["filename"])
                     if content is not None:
-                        with open(f_info["filename"], "w", encoding="utf-8") as f:
+                        out = f"{job_id}_{f_info['filename']}"
+                        with open(out, "w", encoding="utf-8") as f:
                             f.write(content)
-                        print(f"  Downloaded {f_info['filename']}")
-        print()
+                        cnt = len([l for l in content.splitlines() if l.strip()])
+                        ok(f"{out}  ({cnt} lines)")
+    sep()
     pause()
+
+
+CACHE_FILE = "processed_cache.txt"
+
+
+def _line_id(line):
+    return hashlib.sha256(line.encode()).hexdigest()[:16]
+
+
+def _load_cache():
+    if not os.path.exists(CACHE_FILE):
+        return set()
+    with open(CACHE_FILE, encoding="utf-8") as f:
+        return {_line_id(line.strip()) for line in f if line.strip()}
+
+
+def _save_to_cache(lines):
+    existing = _load_cache()
+    with open(CACHE_FILE, "a", encoding="utf-8") as f:
+        for line in lines:
+            lid = _line_id(line)
+            if lid not in existing:
+                f.write(line + "\n")
+                existing.add(lid)
+
+
+def sleep_range(lo=10, hi=60):
+    t = random.randint(lo, hi)
+    bar = progress_bar(0, t)
+    log(f"    Sleeping {t}s  {bar}")
+    for i in range(t):
+        if i % 5 == 0 and i > 0:
+            print(f"    Sleeping {t}s  {progress_bar(i, t)}", end="\r", flush=True)
+        time.sleep(1)
+    log(f"    Sleeping {t}s  {progress_bar(t, t)}")
+
+
+def _raw_submit(client, text, label, captcha_type="ingame"):
+    while True:
+        try:
+            jd = client.submit(text, captcha_type)
+            return jd
+        except SystemExit as e:
+            msg = str(e)
+            if "429" in msg.lower() or "rate" in msg.lower():
+                import re
+                m = re.search(r"(\d+)s", msg)
+                w = int(m.group(1)) + random.randint(3, 10) if m else random.randint(60, 120)
+                warn(f"Rate limited — waiting {w}s")
+                time.sleep(w)
+                continue
+            raise
+
+
+def cmd_autosolve():
+    clear()
+    header("AUTOSOLVE")
+    log("    Press Ctrl+C to stop and return to menu.")
+    log()
+    filepath = input(f"  Accounts file [{DEFAULT_ACCOUNTS_FILE}]: ").strip()
+    if not filepath:
+        filepath = DEFAULT_ACCOUNTS_FILE
+    cycle = 0
+
+    def sigint(sig, frame):
+        log("\n   [!] Returning to menu.")
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT, sigint)
+
+    while True:
+        cycle += 1
+        clear()
+        header(f"AUTOSOLVE  cycle {cycle}")
+
+        if not os.path.exists(filepath):
+            warn(f"{filepath} not found — waiting")
+            sleep_range(30, 60)
+            continue
+
+        with open(filepath, encoding="utf-8") as f:
+            all_l = [l.strip() for l in f if l.strip()]
+        if not all_l:
+            warn(f"{filepath} is empty — waiting")
+            sleep_range(30, 60)
+            continue
+
+        cached = _load_cache()
+        new_l = [l for l in all_l if _line_id(l) not in cached]
+        new_text = "\n".join(new_l)
+
+        if not new_l:
+            log("    No new accounts.")
+            sleep_range(15, 30)
+            continue
+
+        field("Total", len(all_l))
+        field("New", len(new_l))
+        field("Done", len(all_l) - len(new_l))
+        sep()
+
+        fu_ok = 0
+        zs_ok = 0
+        zs_already = 0
+
+        try:
+            log("  [1] Face Unlock")
+            time.sleep(random.uniform(2, 4))
+            fd = _raw_submit(fu_client, new_text, "FU")
+            fid = fd["job_id"]
+            log(f"      Job {fid}")
+            fr = watch_loop_fu(fid)
+            fu_ok = fr.get("successful", 0)
+            if fr["status"] != "completed":
+                warn(f"Face unlock failed ({fr['status']})")
+                sleep_range(30, 60)
+                continue
+
+            log(f"    Waiting 350s before captcha solve...")
+            sleep_range(350, 350)
+            log("  [2] Captcha Solve (captcha-lock)")
+            time.sleep(random.uniform(1, 3))
+            zd = _raw_submit(client, new_text, "ZS", captcha_type="captchalock")
+            zid = zd["job_id"]
+            log(f"      Job {zid}")
+            zr = watch_loop(zid)
+            zs_ok = zr.get("successful", 0)
+            zs_already = zr.get("already_solved", 0)
+            if zr["status"] != "completed":
+                warn(f"Captcha solve ended: {zr['status']}")
+
+            _save_to_cache(new_l)
+
+        except SystemExit as e:
+            if "Returning to menu" in str(e):
+                return
+            warn(str(e))
+            sleep_range(30, 60)
+            continue
+        except requests.exceptions.RequestException as e:
+            warn(f"Network: {e}")
+            sleep_range(30, 60)
+            continue
+
+        total_done = len(all_l) - len(_load_cache())
+        sep()
+        ok(f"Cycle {cycle} complete")
+        field("Unlocked", f"{fu_ok}/{len(new_l)}")
+        field("Captcha'd", f"{zs_ok} solved + {zs_already} already")
+        field("Total done", total_done)
+        sep()
+        sleep_range(10, 60)
 
 
 def main():
@@ -420,26 +638,27 @@ def main():
 
     while True:
         clear()
-        print("  =" * 35)
-        print("  |   ZeroPoint ZeroSolver                |")
+        log("  .------------------------------------------.")
+        log("  |        ZeroPoint  ZeroSolver             |")
         if _credits_cache:
             b = _credits_cache
-            print(f"  |   Balance: {b['effective']:<6.2f}   Reserved: {b['reserved']:<6.2f}        |")
+            log(f"  |  ZS  {b['effective']:>6.2f}  cr    Res  {b['reserved']:>5.2f}           |")
         if _fu_balance_cache and fu_client:
-            print(f"  |   FU Balance: ${_fu_balance_cache['effective']:<5.2f}                          |")
-        print(f"  =" * 35)
-        print(f"  |  1. Check Credits            |")
-        print(f"  |  2. Submit Accounts          |")
-        print(f"  |  3. Job Status               |")
-        print(f"  |  4. Download Results         |")
-        print(f"  |  5. Cancel Job               |")
-        print(f"  |  6. Active Jobs              |")
+            log(f"  |  FU  ${_fu_balance_cache['effective']:>5.2f}                              |")
+        log("  |------------------------------------------|")
+        log("  |  1. Credits                              |")
+        log("  |  2. Submit Accounts                      |")
+        log("  |  3. Job Status                           |")
+        log("  |  4. Download Results                     |")
+        log("  |  5. Cancel Job                           |")
+        log("  |  6. Active Jobs                          |")
         if fu_client:
-            print(f"  |  7. Face Unlock              |")
-        print(f"  =" * 35)
-        print(f"  |  0. Exit                     |")
-        print(f"  =" * 35)
-        choice = input("  Choice [0-7]: ").strip()
+            log("  |  7. Face Unlock                          |")
+        log("  |  8. Auto-Solve (continuous)              |")
+        log("  |------------------------------------------|")
+        log("  |  0. Exit                                 |")
+        log("  '------------------------------------------'")
+        choice = input("  Choice [0-8]: ").strip()
         dispatch = {
             "1": cmd_credits,
             "2": cmd_submit,
@@ -451,6 +670,7 @@ def main():
         }
         if fu_client:
             dispatch["7"] = cmd_faceunlock
+        dispatch["8"] = cmd_autosolve
         fn = dispatch.get(choice)
         if fn:
             fn()
