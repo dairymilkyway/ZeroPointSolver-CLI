@@ -2,15 +2,11 @@ import sys
 import time
 import requests
 
-API_BASE = "https://zeropoint.to/api/zerosolver-api"
+API_BASE = "https://zeropoint.to/api/faceunlock-api"
 MAX_RETRIES = 3
 
 
-class ZeroSolverError(Exception):
-    pass
-
-
-class ZeroSolverClient:
+class FaceUnlockClient:
     def __init__(self, api_key):
         self.headers = {
             "X-API-Key": api_key,
@@ -26,19 +22,18 @@ class ZeroSolverClient:
                 raise SystemExit(f"Network error: {e}")
 
             if r.status_code == 401:
-                raise SystemExit("Error 401: Invalid API key")
+                raise SystemExit("Error 401: Invalid Face Unlock API key")
             if r.status_code == 403:
-                raise SystemExit("Error 403: API key has been disabled")
+                raise SystemExit("Error 403: Face Unlock API key has been disabled")
             if r.status_code == 402:
                 data = r.json()
-                print("Error 402: Insufficient Solver Credits")
-                print(f"  Required: {data.get('required', '?')} credits")
-                print(f"  Available: {data.get('available', '?')} credits")
-                print(f"  Cost per success: {data.get('cost_per_success', '?')} credits")
+                print("Error 402: Insufficient Face Unlock balance")
+                print(f"  Required: ${data.get('required', '?')}")
+                print(f"  Available: ${data.get('available', '?')}")
                 sys.exit(1)
             if r.status_code == 429:
                 data = r.json()
-                retry_s = data.get("retryAfterSeconds") or data.get("retryAfterMs") or data.get("retry_after_ms")
+                retry_s = data.get("retry_after") or data.get("retryAfterMs")
                 if isinstance(retry_s, (int, float)) and attempt < MAX_RETRIES:
                     wait = retry_s if retry_s < 100 else retry_s / 1000
                     print(f"Rate limited. Waiting {wait:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
@@ -52,28 +47,29 @@ class ZeroSolverClient:
                     print(f"Service temporarily unavailable ({r.status_code}). Retrying in {wait}s (attempt {attempt + 1}/{MAX_RETRIES})...")
                     time.sleep(wait)
                     continue
-                raise SystemExit(f"Error {r.status_code}: ZeroSolver service temporarily unavailable")
+                raise SystemExit(f"Error {r.status_code}: Face Unlock service temporarily unavailable")
             if r.status_code == 400:
                 data = r.json()
                 raise SystemExit(f"Error 400: {data.get('error', 'Bad request')}")
             if r.status_code == 409:
                 data = r.json()
-                print(f"Error 409: {data.get('error', 'Conflict - job may already exist')}")
-                job_id = data.get("job_id")
-                if job_id:
-                    print(f"  Existing Job ID: {job_id}")
+                existing = data.get("existing_job_id")
+                if existing:
+                    print(f"Existing active job found: {existing} — watching it instead")
+                    data["job_id"] = existing
                     return data
+                print(f"Error 409: {data.get('error', 'Conflict')}")
                 sys.exit(1)
             r.raise_for_status()
             return r.json()
 
-    def get_credits(self):
-        return self._request("GET", "/credits")
+    def get_balance(self):
+        return self._request("GET", "/balance")
 
-    def submit(self, accounts, captcha_type="ingame"):
-        payload = {"accounts": accounts}
-        if captcha_type != "ingame":
-            payload["captcha_type"] = captcha_type
+    def submit(self, accounts_text, priority=False):
+        payload = {"accounts": accounts_text}
+        if priority:
+            payload["priority"] = True
         return self._request("POST", "/submit", json=payload)
 
     def get_status(self, job_id):

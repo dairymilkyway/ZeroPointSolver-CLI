@@ -1,7 +1,7 @@
 import os
 
-def load_api_key():
-    api_key = os.environ.get("X-API-Key")
+def _load_key(env_var, file_key, prefix_hint):
+    api_key = os.environ.get(env_var)
     if api_key:
         return api_key
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -13,10 +13,16 @@ def load_api_key():
                     continue
                 if "=" in line:
                     key, _, value = line.partition("=")
-                    if key.strip() == "X-API-Key":
+                    if key.strip() == file_key:
                         return value.strip()
     raise SystemExit(
-        "Error: X-API-Key not found.\n"
-        "  Set it in .env as: X-API-Key = ZP_ZeroSolver_YourKey\n"
-        "  Or set the X-API-Key environment variable."
+        f"Error: {file_key} not found.\n"
+        f"  Set it in .env as: {file_key} = {prefix_hint}\n"
+        f"  Or set the {env_var} environment variable."
     )
+
+def load_zsolver_key():
+    return _load_key("X-API-Key-Solver", "X-API-Key-Solver", "ZP_ZeroSolver_YourKey")
+
+def load_faceunlock_key():
+    return _load_key("X-API-Key-Face_Unlock", "X-API-Key-Face_Unlock", "ZP_FaceUnlock_YourKey")
