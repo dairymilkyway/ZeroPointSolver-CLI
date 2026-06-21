@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import hashlib
 import os
 import random
 import signal
@@ -471,29 +470,6 @@ def cmd_faceunlock():
     pause()
 
 
-CACHE_FILE = "processed_cache.txt"
-
-
-def _line_id(line):
-    return hashlib.sha256(line.encode()).hexdigest()[:16]
-
-
-def _load_cache():
-    if not os.path.exists(CACHE_FILE):
-        return set()
-    with open(CACHE_FILE, encoding="utf-8") as f:
-        return {_line_id(line.strip()) for line in f if line.strip()}
-
-
-def _save_to_cache(lines):
-    existing = _load_cache()
-    with open(CACHE_FILE, "a", encoding="utf-8") as f:
-        for line in lines:
-            lid = _line_id(line)
-            if lid not in existing:
-                f.write(line + "\n")
-                existing.add(lid)
-
 
 def sleep_range(lo=10, hi=60):
     t = random.randint(lo, hi)
@@ -555,18 +531,9 @@ def cmd_autosolve():
             sleep_range(30, 60)
             continue
 
-        cached = _load_cache()
-        new_l = [l for l in all_l if _line_id(l) not in cached]
-        new_text = "\n".join(new_l)
+        new_text = "\n".join(all_l)
 
-        if not new_l:
-            log("    No new accounts.")
-            sleep_range(15, 30)
-            continue
-
-        field("Total", len(all_l))
-        field("New", len(new_l))
-        field("Done", len(all_l) - len(new_l))
+        field("Accounts", len(all_l))
         sep()
 
         fu_ok = 0
@@ -599,8 +566,6 @@ def cmd_autosolve():
             if zr["status"] != "completed":
                 warn(f"Captcha solve ended: {zr['status']}")
 
-            _save_to_cache(new_l)
-
         except SystemExit as e:
             if "Returning to menu" in str(e):
                 return
@@ -612,12 +577,10 @@ def cmd_autosolve():
             sleep_range(30, 60)
             continue
 
-        total_done = len(all_l) - len(_load_cache())
         sep()
         ok(f"Cycle {cycle} complete")
-        field("Unlocked", f"{fu_ok}/{len(new_l)}")
+        field("Unlocked", f"{fu_ok}/{len(all_l)}")
         field("Captcha'd", f"{zs_ok} solved + {zs_already} already")
-        field("Total done", total_done)
         sep()
         sleep_range(10, 60)
 
