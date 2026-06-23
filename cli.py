@@ -438,6 +438,67 @@ def cmd_autosolve(client, args):
         sleep_range(10, 60)
 
 
+def cmd_autosolve_captcha(client, args):
+    fp = args.file or DEFAULT_ACCOUNTS_FILE
+    cycle = 0
+
+    def sigint(sig, frame):
+        log("\n   [!] Stopped by user.")
+        sys.exit(0)
+    signal.signal(signal.SIGINT, sigint)
+
+    while True:
+        cycle += 1
+        header(f"AUTOSOLVE CAPTCHA  cycle {cycle}")
+
+        if not os.path.exists(fp):
+            warn(f"{fp} not found — waiting")
+            sleep_range(30, 60)
+            continue
+
+        with open(fp, encoding="utf-8") as f:
+            all_l = [l.strip() for l in f if l.strip()]
+        if not all_l:
+            warn(f"{fp} is empty — waiting")
+            sleep_range(30, 60)
+            continue
+
+        new_text = "\n".join(all_l)
+        field("Accounts", len(all_l))
+        sep()
+
+        zs_ok = 0
+        zs_already = 0
+
+        try:
+            log("  Submitting (in-game)...")
+            time.sleep(random.uniform(1, 3))
+            zd = _raw_submit(client, new_text, "ZS", captcha_type="ingame")
+            zid = zd["job_id"]
+            log(f"      Job {zid}")
+            zr = watch_until_done(client, zid)
+            zs_ok = zr.get("successful", 0)
+            zs_already = zr.get("already_solved", 0)
+            if zr["status"] != "completed":
+                warn(f"Captcha solve ended: {zr['status']}")
+
+        except SystemExit as e:
+            warn(str(e))
+            sleep_range(30, 60)
+            continue
+        except requests.exceptions.RequestException as e:
+            warn(f"Network: {e}")
+            sleep_range(30, 60)
+            continue
+
+        sep()
+        ok(f"Cycle {cycle} complete")
+        field("Solved", f"{zs_ok} solved + {zs_already} already")
+        sep()
+        log("    Waiting 350s before next cycle...")
+        sleep_range(350, 350)
+
+
 # ── main ──────────────────────────────────────────────
 
 def main():
@@ -467,6 +528,9 @@ def main():
     p = sub.add_parser("autosolve", help="Continuous autopilot: FU + captcha")
     p.add_argument("-f", "--file", help=f"Account file (default: {DEFAULT_ACCOUNTS_FILE})")
 
+    p = sub.add_parser("autosolve-captcha", help="Continuous captcha-only (in-game)")
+    p.add_argument("-f", "--file", help=f"Account file (default: {DEFAULT_ACCOUNTS_FILE})")
+
     p = sub.add_parser("faceunlock", help="Face unlock only")
     p.add_argument("-f", "--file", help=f"Account file (default: {DEFAULT_ACCOUNTS_FILE})")
     p.add_argument("-w", "--watch", action="store_true")
@@ -476,6 +540,9 @@ def main():
 
     if args.command == "autosolve":
         cmd_autosolve(ZeroSolverClient(load_zsolver_key()), args)
+        return
+    if args.command == "autosolve-captcha":
+        cmd_autosolve_captcha(ZeroSolverClient(load_zsolver_key()), args)
         return
     if args.command == "faceunlock":
         cmd_faceunlock(FaceUnlockClient(load_faceunlock_key()), args)

@@ -585,6 +585,76 @@ def cmd_autosolve():
         sleep_range(10, 60)
 
 
+def cmd_autosolve_captcha():
+    clear()
+    header("AUTOSOLVE CAPTCHA (in-game)")
+    log("    Press Ctrl+C to stop and return to menu.")
+    log()
+    filepath = input(f"  Accounts file [{DEFAULT_ACCOUNTS_FILE}]: ").strip()
+    if not filepath:
+        filepath = DEFAULT_ACCOUNTS_FILE
+    cycle = 0
+
+    def sigint(sig, frame):
+        log("\n   [!] Returning to menu.")
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT, sigint)
+
+    while True:
+        cycle += 1
+        clear()
+        header(f"AUTOSOLVE CAPTCHA  cycle {cycle}")
+
+        if not os.path.exists(filepath):
+            warn(f"{filepath} not found — waiting")
+            sleep_range(30, 60)
+            continue
+
+        with open(filepath, encoding="utf-8") as f:
+            all_l = [l.strip() for l in f if l.strip()]
+        if not all_l:
+            warn(f"{filepath} is empty — waiting")
+            sleep_range(30, 60)
+            continue
+
+        new_text = "\n".join(all_l)
+        field("Accounts", len(all_l))
+        sep()
+
+        zs_ok = 0
+        zs_already = 0
+
+        try:
+            log("  Submitting (in-game)...")
+            time.sleep(random.uniform(1, 3))
+            zd = _raw_submit(client, new_text, "ZS", captcha_type="ingame")
+            zid = zd["job_id"]
+            log(f"      Job {zid}")
+            zr = watch_loop(zid)
+            zs_ok = zr.get("successful", 0)
+            zs_already = zr.get("already_solved", 0)
+            if zr["status"] != "completed":
+                warn(f"Captcha solve ended: {zr['status']}")
+
+        except SystemExit as e:
+            if "Returning to menu" in str(e):
+                return
+            warn(str(e))
+            sleep_range(30, 60)
+            continue
+        except requests.exceptions.RequestException as e:
+            warn(f"Network: {e}")
+            sleep_range(30, 60)
+            continue
+
+        sep()
+        ok(f"Cycle {cycle} complete")
+        field("Solved", f"{zs_ok} solved + {zs_already} already")
+        sep()
+        log("    Waiting 350s before next cycle...")
+        sleep_range(350, 350)
+
+
 def main():
     global client, fu_client
     api_key = load_zsolver_key()
@@ -617,11 +687,12 @@ def main():
         log("  |  6. Active Jobs                          |")
         if fu_client:
             log("  |  7. Face Unlock                          |")
-        log("  |  8. Auto-Solve (continuous)              |")
+        log("  |  8. Auto-Solve (FU + captcha-lock)       |")
+        log("  |  9. Auto-Solve Captcha Only (in-game)    |")
         log("  |------------------------------------------|")
         log("  |  0. Exit                                 |")
         log("  '------------------------------------------'")
-        choice = input("  Choice [0-8]: ").strip()
+        choice = input("  Choice [0-9]: ").strip()
         dispatch = {
             "1": cmd_credits,
             "2": cmd_submit,
@@ -634,6 +705,7 @@ def main():
         if fu_client:
             dispatch["7"] = cmd_faceunlock
         dispatch["8"] = cmd_autosolve
+        dispatch["9"] = cmd_autosolve_captcha
         fn = dispatch.get(choice)
         if fn:
             fn()
