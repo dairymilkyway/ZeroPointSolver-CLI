@@ -124,6 +124,10 @@ def _raw_submit(client, text, label, captcha_type="ingame"):
     while True:
         try:
             jd = client.submit(text, captcha_type)
+            if jd is None:
+                warn("Submit returned None — retrying...")
+                time.sleep(random.randint(10, 30))
+                continue
             return jd
         except SystemExit as e:
             msg = str(e)
@@ -399,6 +403,10 @@ def cmd_autosolve(client, args):
             log("  [1] Face Unlock")
             time.sleep(random.uniform(2, 4))
             fd = _raw_submit(fuc, new_text, "FU")
+            if not fd:
+                warn("Face unlock submit failed — skipping cycle")
+                sleep_range(30, 60)
+                continue
             fid = fd["job_id"]
             log(f"      Job {fid}")
             fr = watch_until_done_fu(fuc, fid)
@@ -413,6 +421,10 @@ def cmd_autosolve(client, args):
             log("  [2] Captcha Solve (captcha-lock)")
             time.sleep(random.uniform(1, 3))
             zd = _raw_submit(client, new_text, "ZS", captcha_type="captchalock")
+            if not zd:
+                warn("Captcha submit failed — skipping cycle")
+                sleep_range(30, 60)
+                continue
             zid = zd["job_id"]
             log(f"      Job {zid}")
             zr = watch_until_done(client, zid)
@@ -474,6 +486,10 @@ def cmd_autosolve_captcha(client, args):
             log("  Submitting (in-game)...")
             time.sleep(random.uniform(1, 3))
             zd = _raw_submit(client, new_text, "ZS", captcha_type="ingame")
+            if not zd:
+                warn("Captcha submit failed — skipping cycle")
+                sleep_range(30, 60)
+                continue
             zid = zd["job_id"]
             log(f"      Job {zid}")
             zr = watch_until_done(client, zid)

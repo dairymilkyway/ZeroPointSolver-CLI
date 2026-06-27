@@ -41,6 +41,7 @@ class ZeroSolverClient:
                 retry_s = data.get("retryAfterSeconds") or data.get("retryAfterMs") or data.get("retry_after_ms")
                 if isinstance(retry_s, (int, float)):
                     wait = retry_s if retry_s < 100 else retry_s / 1000
+                    wait = max(wait, 5)
                     print(f"  Rate limited — waiting {wait:.0f}s...")
                     time.sleep(wait)
                     continue
@@ -66,6 +67,8 @@ class ZeroSolverClient:
                 sys.exit(1)
             r.raise_for_status()
             return r.json()
+
+        raise SystemExit("Error 429: Rate limited — all retries exhausted")
 
     def get_credits(self):
         return self._request("GET", "/credits")
