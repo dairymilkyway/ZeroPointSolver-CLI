@@ -31,7 +31,8 @@ jobs:
           if [ "$failed" = "1" ]; then exit 1; fi
           echo "All Python files pass syntax check"
 
-      - name: Create PR
+      - name: Create or update PR
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -43,9 +44,21 @@ jobs:
 
           EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length')
           if [ "$EXISTING" -gt 0 ]; then
-            echo "Open PR from dev → main already exists — updating instead."
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
+            echo "Existing PR #$PR_NUM — updating title/body."
             gh pr edit "$PR_NUM" --title "$TITLE" --body "$BODY"
           else
-            gh pr create --base main --head dev --title "$TITLE" --body "$BODY"
+            PR_NUM=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY" --json number --jq '.number')
+            echo "Created PR #$PR_NUM."
           fi
+          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Auto-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM=${{ steps.pr.outputs.number }}
+          echo "Merging PR #$PR_NUM..."
+          gh pr merge "$PR_NUM" --merge || {
+            echo "Merge failed — likely conflicts or checks not passing. PR is left open."
+          }
