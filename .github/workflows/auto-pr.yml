@@ -42,13 +42,14 @@ jobs:
           Changes:
           $(git log --oneline origin/main..origin/dev --no-merges 2>/dev/null | head -20 || echo "(no linear history available)")"
 
-          EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length')
+          EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$EXISTING" -gt 0 ]; then
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
             echo "Existing PR #$PR_NUM — updating title/body."
             gh pr edit "$PR_NUM" --title "$TITLE" --body "$BODY"
           else
-            PR_NUM=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY" --json number --jq '.number')
+            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY")
+            PR_NUM=$(echo "$PR_URL" | sed 's|.*/||')
             echo "Created PR #$PR_NUM."
           fi
           echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
