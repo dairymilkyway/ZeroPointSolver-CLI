@@ -1,0 +1,65 @@
+name: Auto PR dev → main
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  check-and-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check
+        run: |
+          failed=0
+          for f in $(find . -name "*.py" -not -path "./.github/*"); do
+            python -m py_compile "$f" || { echo "Syntax error in $f"; failed=1; }
+          done
+          if [ "$failed" = "1" ]; then exit 1; fi
+          echo "All Python files pass syntax check"
+
+      - name: Create or update PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Auto PR: dev → main ($(date +'%Y-%m-%d'))"
+          BODY="Automated PR created on push to \`dev\`.
+
+          Changes:
+          $(git log --oneline origin/main..origin/dev --no-merges 2>/dev/null | head -20 || echo "(no linear history available)")"
+
+          EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "$EXISTING" -gt 0 ]; then
+            PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
+            echo "Existing PR #$PR_NUM — updating title/body."
+            gh pr edit "$PR_NUM" --title "$TITLE" --body "$BODY"
+          else
+            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY")
+            PR_NUM=$(echo "$PR_URL" | sed 's|.*/||')
+            echo "Created PR #$PR_NUM."
+          fi
+          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Auto-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM=${{ steps.pr.outputs.number }}
+          echo "Merging PR #$PR_NUM..."
+          gh pr merge "$PR_NUM" --merge || {
+            echo "Merge failed — likely conflicts or checks not passing. PR is left open."
+          }
