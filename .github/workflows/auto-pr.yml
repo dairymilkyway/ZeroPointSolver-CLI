@@ -1,14 +1,14 @@
-name: Suggest PR title
+name: Auto PR dev → main
 
 on:
   push:
     branches: [dev]
 
 jobs:
-  suggest:
+  pr:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
 
     steps:
@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate suggested title
+      - name: Generate PR title
         id: suggest
         run: |
           TYPE=$(git log origin/main..HEAD --format="%s" | grep -oE '^(feat|fix|refactor|chore|docs|test|style|perf)' | head -1 || echo "chore")
@@ -38,14 +38,20 @@ jobs:
           TITLE="${TYPE}(${SCOPE}): ${DESC}"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
-      - name: Print suggestion
-        env:
-          TITLE: ${{ steps.suggest.outputs.title }}
+      - name: Build PR body
         run: |
-          echo "### Suggested PR title" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$TITLE\`" >> "$GITHUB_STEP_SUMMARY"
+          cat > /tmp/pr-body.md <<- EOF
+          ## Changes
 
-      - name: Update existing PR or show hint
+          $(git diff origin/main...HEAD --stat --)
+
+          ### Commits
+
+          $(git log origin/main..HEAD --oneline --no-merges 2>/dev/null | head -30 || echo "—")
+          EOF
+
+      - name: Create or update PR
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
           TITLE: ${{ steps.suggest.outputs.title }}
@@ -53,9 +59,22 @@ jobs:
           EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$EXISTING" -gt 0 ]; then
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
-            gh pr edit "$PR_NUM" --title "$TITLE"
-            echo "Updated PR #$PR_NUM title to: $TITLE"
+            gh pr edit "$PR_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Updated PR #$PR_NUM"
+            echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
           else
-            echo "No PR from dev→main yet. Suggested title:"
-            echo "  $TITLE"
+            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body-file /tmp/pr-body.md)
+            PR_NUM=$(echo "$PR_URL" | sed 's|.*/||')
+            echo "Created PR #$PR_NUM"
+            echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Auto-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM=${{ steps.pr.outputs.number }}
+          echo "Merging PR #$PR_NUM..."
+          gh pr merge "$PR_NUM" --merge || {
+            echo "Merge failed — conflicts or checks not passing. PR left open."
+          }
