@@ -8,10 +8,13 @@ A Python CLI and interactive tool for the [ZeroPoint](https://zeropoint.to/) pla
 - **Face Unlock pipeline** — detect & solve face lock, then captcha solve, all in one command
 - **Interactive menu** (`python main.py`) — no commands to memorize
 - **CLI mode** (`python cli.py <command>`) — for scripts and automation
+- **Autosolve mode** — continuous cycles of face unlock + captcha solving on a timer
 - **Live balance tracking** — credit and dollar balances shown before/after every job
-- **Auto-watch** — poll job progress every 3 seconds until completion
+- **Auto-watch** — poll job progress every 3 seconds with animated spinner and progress bar
+- **Smart PR titles** — GitHub Action generates conventional-commit PR titles from git history
 - **Rate-limit handling** — automatic retry with backoff on 429/503 errors
-- **Priority queue** — opt into faster Face Unlock processing (2× pricing)
+- **Priority queue** — opt into faster Face Unlock processing
+- **Themed CLI output** — professional visual design with color, box-drawing, and ASCII fallback
 - **Only one dependency** — `requests`
 
 ## Technology Stack
@@ -21,6 +24,7 @@ A Python CLI and interactive tool for the [ZeroPoint](https://zeropoint.to/) pla
 | Language | Python 3.7+ |
 | HTTP | `requests` |
 | APIs | ZeroPoint ZeroSolver REST API, ZeroPoint Face Unlock REST API |
+| CI/CD | GitHub Actions (auto-PR with smart title generation) |
 
 ## Prerequisites
 
@@ -68,22 +72,25 @@ python main.py
 ```
 
 ```
-===================================
-|   ZeroPoint ZeroSolver          |
-|   Balance: 1.75    Reserved: 0.00     |
-|   FU Balance: $6.38                    |
-===================================
-|  1. Check Credits              |
-|  2. Submit Accounts            |
-|  3. Job Status                 |
-|  4. Download Results           |
-|  5. Cancel Job                 |
-|  6. Active Jobs                |
-|  7. Face Unlock                |
-===================================
-|  0. Exit                       |
-===================================
-Choice [0-7]:
+  ┌────────────────────────────────────────────┐
+  │        ZeroPoint  ZeroSolver               │
+  │                                            │
+  │  ZS   100.00 cr     Res     0.00 cr        │
+  │  FU   $100.00                              │
+  ├────────────────────────────────────────────┤
+  │  1. Credits                               │
+  │  2. Submit Accounts                       │
+  │  3. Job Status                            │
+  │  4. Download Results                      │
+  │  5. Cancel Job                            │
+  │  6. Active Jobs                           │
+  │  7. Face Unlock                           │
+  │  8. Auto-Solve (FU + captcha-lock)        │
+  │  9. Auto-Solve Captcha Only (in-game)     │
+  ├────────────────────────────────────────────┤
+  │  0. Exit                                  │
+  └────────────────────────────────────────────┘
+  Choice [0-9]:
 ```
 
 ### CLI Mode
@@ -99,20 +106,23 @@ python cli.py download <job_id>           # download results
 python cli.py cancel <job_id>             # cancel a job
 python cli.py active                      # list active jobs
 python cli.py credits                     # check ZeroSolver balance
+python cli.py autosolve                   # continuous FU + captcha cycles
+python cli.py autosolve-captcha           # continuous captcha-only cycles
 ```
 
 ## Project Architecture
 
 ```
 User
-  |
+  │
   ├── main.py (interactive menu)
   └── cli.py  (command-line)
-       |
-       ├── config.py      → .env (API keys)
-       ├── api_client.py  → ZeroPoint ZeroSolver API (captcha)
+       │
+       ├── theme.py        → shared visual styling (colors, icons, progress bars)
+       ├── config.py       → .env (API keys)
+       ├── api_client.py   → ZeroPoint ZeroSolver API (captcha)
        └── faceunlock_client.py → ZeroPoint Face Unlock API
-            |
+            │
             └── https://zeropoint.to/
                  ├── /api/zerosolver-api
                  └── /api/faceunlock-api
@@ -138,10 +148,14 @@ Step 2 ── ZeroSolver API ───→ solved.txt, already_solved.txt, failed
 ZPCaptchaSolver/
 ├── main.py                  # Interactive menu (both APIs)
 ├── cli.py                   # CLI entry point (both APIs)
+├── theme.py                 # Shared visual theme module
 ├── api_client.py            # ZeroSolver API wrapper
 ├── faceunlock_client.py     # Face Unlock API wrapper
 ├── config.py                # API key loader (dual key support)
 ├── requirements.txt         # pip dependencies
+├── .github/
+│   └── workflows/
+│       └── auto-pr.yml      # GitHub Action: auto-PR with smart title gen
 ├── .env                     # API keys (gitignored)
 ├── accs.txt                 # Account list (gitignored)
 ├── .gitignore
@@ -176,16 +190,41 @@ python cli.py faceunlock -f myaccounts.txt
 | Cancel | `5` | `cancel <id>` | Cancel a running job from either API |
 | Active | `6` | `active` | List active jobs from both APIs |
 | Face Unlock | `7` | `faceunlock` | Submit accounts for face unlock only |
+| Auto-Solve | `8` | `autosolve` | Continuous FU + captcha-lock cycles |
+| Auto Captcha | `9` | `autosolve-captcha` | Continuous in-game captcha cycles |
 
 ### CLI Flags
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-f`, `--file` | `submit`, `faceunlock` | Account file path (default: `accs.txt`) |
+| `-f`, `--file` | `submit`, `faceunlock`, `autosolve*` | Account file path (default: `accs.txt`) |
 | `--captchalock` | `submit` | Use captcha-lock solver (default: in-game) |
 | `--faceunlock` | `submit` | Run full pipeline: face unlock first, then captcha solve |
-| `--priority` | `faceunlock` | Use Priority queue for faster face unlock (2× pricing) |
+| `--priority` | `faceunlock` | Use Priority queue for faster face unlock |
 | `-w`, `--watch` | `submit`, `status`, `faceunlock` | Auto-poll until job finishes |
+
+## Visual Theme
+
+The CLI uses a shared theme module (`theme.py`) that provides:
+
+- **Terminal-aware styling** — detects color and unicode support at startup
+- **4-color palette** — accent (blue), success (green), error (red), info (cyan) — all muted/desaturated
+- **Unicode with ASCII fallback** — box-drawing (─│┌┐└┘├┤) on modern terminals, plain ASCII (`-|.+`) otherwise
+- **Animated spinner** — braille frames (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) or `|/-\`
+- **Progress bars** — filled/unfilled blocks (█░) with percentage
+- **Status badges** — ✓/✗/⚠/● or `[OK]`/`[FAIL]`/`[WARN]`/`[...]`
+
+Disable with `NO_COLOR=1` or `--no-unicode` flags.
+
+## CI/CD
+
+On every push to `dev`, a GitHub Action runs that:
+
+1. Generates a conventional-commit style PR title from the git diff
+2. Creates (or updates) a PR from `dev → main` with that title and a body showing changed files + commits
+3. Auto-merges the PR if all checks pass
+
+Title format: `type(scope): description` (e.g. `feat(theme): add shared styling module`)
 
 ## Pricing
 
@@ -205,7 +244,7 @@ python cli.py faceunlock -f myaccounts.txt
 | Queue | Cost per success | Notes |
 |---|---|---|
 | Standard (default) | $0.05/account | Database-matched accounts are FREE |
-| Priority (`--priority`) | $0.10/account (2×) | Database-matched accounts: $0.05 flat |
+| Priority (`--priority`) | $0.10/account | Database-matched accounts: $0.05 flat |
 
 ### Result Files
 
@@ -238,6 +277,20 @@ Files are deleted after 24 hours — download promptly.
 - Max 10,000 accounts per submission
 - 1 active job at a time
 - WebSocket real-time updates available via Socket.IO
+
+## Development
+
+```bash
+# No build step required — pure Python
+# Run syntax check on all files:
+python -c "import py_compile; import glob; [py_compile.compile(f) for f in glob.glob('*.py')]"
+```
+
+### Workflow
+
+1. Create a feature branch from `dev`
+2. Make changes
+3. Push to `dev` — the auto-PR action will suggest a title and create the PR
 
 ## License
 
