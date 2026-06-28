@@ -203,29 +203,6 @@ python cli.py faceunlock -f myaccounts.txt
 | `--priority` | `faceunlock` | Use Priority queue for faster face unlock |
 | `-w`, `--watch` | `submit`, `status`, `faceunlock` | Auto-poll until job finishes |
 
-## Visual Theme
-
-The CLI uses a shared theme module (`theme.py`) that provides:
-
-- **Terminal-aware styling** — detects color and unicode support at startup
-- **4-color palette** — accent (blue), success (green), error (red), info (cyan) — all muted/desaturated
-- **Unicode with ASCII fallback** — box-drawing (─│┌┐└┘├┤) on modern terminals, plain ASCII (`-|.+`) otherwise
-- **Animated spinner** — braille frames (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) or `|/-\`
-- **Progress bars** — filled/unfilled blocks (█░) with percentage
-- **Status badges** — ✓/✗/⚠/● or `[OK]`/`[FAIL]`/`[WARN]`/`[...]`
-
-Disable with `NO_COLOR=1` or `--no-unicode` flags.
-
-## CI/CD
-
-On every push to `dev`, a GitHub Action runs that:
-
-1. Generates a conventional-commit style PR title from the git diff
-2. Creates (or updates) a PR from `dev → main` with that title and a body showing changed files + commits
-3. Auto-merges the PR if all checks pass
-
-Title format: `type(scope): description` (e.g. `feat(theme): add shared styling module`)
-
 ## Pricing
 
 ### ZeroSolver (Captcha Solving)
