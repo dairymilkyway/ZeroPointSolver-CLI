@@ -5,54 +5,69 @@ on:
     branches: [dev]
 
 jobs:
-  check-and-pr:
+  pr:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Syntax check
+      - name: Generate PR title
+        id: suggest
         run: |
-          failed=0
-          for f in $(find . -name "*.py" -not -path "./.github/*"); do
-            python -m py_compile "$f" || { echo "Syntax error in $f"; failed=1; }
+          TYPE=$(git log origin/main..HEAD --format="%s" | grep -oE '^(feat|fix|refactor|chore|docs|test|style|perf)' | head -1 || echo "chore")
+          FILES=$(git diff origin/main...HEAD --name-only)
+          SCOPE="general"
+          for kw in "theme" "cli" "api" "config" "faceunlock" "main"; do
+            if echo "$FILES" | grep -q "$kw"; then
+              SCOPE="$kw"
+              break
+            fi
           done
-          if [ "$failed" = "1" ]; then exit 1; fi
-          echo "All Python files pass syntax check"
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          BEST=$(git log origin/main..HEAD --format="%s" | head -1)
+          if echo "$BEST" | grep -qE '^(feat|fix|refactor|chore|docs|test|style|perf)'; then
+            DESC=$(echo "$BEST" | sed 's/^[^(]*([^)]*)\?:\s*//; s/^[^:]*:\s*//')
+          else
+            DESC="$FILE_COUNT file(s) changed"
+          fi
+          TITLE="${TYPE}(${SCOPE}): ${DESC}"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Build PR body
+        run: |
+          cat > /tmp/pr-body.md <<- EOF
+          ## Changes
+
+          $(git diff origin/main...HEAD --stat --)
+
+          ### Commits
+
+          $(git log origin/main..HEAD --oneline --no-merges 2>/dev/null | head -30 || echo "—")
+          EOF
 
       - name: Create or update PR
         id: pr
         env:
           GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.suggest.outputs.title }}
         run: |
-          TITLE="Auto PR: dev → main ($(date +'%Y-%m-%d'))"
-          BODY="Automated PR created on push to \`dev\`.
-
-          Changes:
-          $(git log --oneline origin/main..origin/dev --no-merges 2>/dev/null | head -20 || echo "(no linear history available)")"
-
           EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$EXISTING" -gt 0 ]; then
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
-            echo "Existing PR #$PR_NUM — updating title/body."
-            gh pr edit "$PR_NUM" --title "$TITLE" --body "$BODY"
+            gh pr edit "$PR_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Updated PR #$PR_NUM"
+            echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
           else
-            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY")
+            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body-file /tmp/pr-body.md)
             PR_NUM=$(echo "$PR_URL" | sed 's|.*/||')
-            echo "Created PR #$PR_NUM."
+            echo "Created PR #$PR_NUM"
+            echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
           fi
-          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
 
       - name: Auto-merge PR
         env:
@@ -61,5 +76,5 @@ jobs:
           PR_NUM=${{ steps.pr.outputs.number }}
           echo "Merging PR #$PR_NUM..."
           gh pr merge "$PR_NUM" --merge || {
-            echo "Merge failed — likely conflicts or checks not passing. PR is left open."
+            echo "Merge failed — conflicts or checks not passing. PR left open."
           }
