@@ -1,65 +1,92 @@
-name: Auto PR dev → main
+name: Suggest PR title
 
 on:
   push:
     branches: [dev]
 
 jobs:
-  check-and-pr:
+  suggest:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Syntax check
+      - name: Generate suggested title
+        id: suggest
         run: |
-          failed=0
-          for f in $(find . -name "*.py" -not -path "./.github/*"); do
-            python -m py_compile "$f" || { echo "Syntax error in $f"; failed=1; }
-          done
-          if [ "$failed" = "1" ]; then exit 1; fi
-          echo "All Python files pass syntax check"
+          # ── type from recent conventional commits ──
+          TYPE=$(git log origin/main..HEAD --format="%s" | grep -oE '^(feat|fix|refactor|chore|docs|test|style|perf)' | head -1 || echo "chore")
 
-      - name: Create or update PR
-        id: pr
+          # ── scope from changed files ──────────────
+          FILES=$(git diff origin/main...HEAD --name-only)
+          SCOPE="general"
+          for kw in "theme" "cli" "api" "config" "faceunlock" "main"; do
+            if echo "$FILES" | grep -q "$kw"; then
+              SCOPE="$kw"
+              break
+            fi
+          done
+
+          # ── description ───────────────────────────
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          STAT=$(git diff origin/main...HEAD --stat -- | tail -1)
+          BEST=$(git log origin/main..HEAD --format="%s" | head -1)
+
+          if echo "$BEST" | grep -qE '^(feat|fix|refactor|chore|docs|test|style|perf)'; then
+            DESC=$(echo "$BEST" | sed 's/^[^(]*([^)]*)\?:\s*//; s/^[^:]*:\s*//')
+          else
+            DESC="$FILE_COUNT file(s) changed"
+          fi
+
+          TITLE="${TYPE}(${SCOPE}): ${DESC}"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Build PR body
+        id: body
+        run: |
+          BODY="## Suggestion
+
+**${{ steps.suggest.outputs.title }}**
+
+### Changes
+
+\`\`\`
+$(git diff origin/main...HEAD --stat --)
+\`\`\`
+
+### Commits
+
+$(git log origin/main..HEAD --oneline --no-merges 2>/dev/null | head -30 || echo "—")
+
+> Title generated from recent commits. Edit before merging if needed.
+"
+          BODY="${BODY//'%'/'%25'}"
+          BODY="${BODY//$'\n'/'%0A'}"
+          BODY="${BODY//$'\r'/'%0D'}"
+          echo "body=$BODY" >> "$GITHUB_OUTPUT"
+
+      - name: Print suggestion
+        run: |
+          echo "### Suggested PR title" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.suggest.outputs.title }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update existing PR or show hint
         env:
           GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          TITLE="Auto PR: dev → main ($(date +'%Y-%m-%d'))"
-          BODY="Automated PR created on push to \`dev\`.
-
-          Changes:
-          $(git log --oneline origin/main..origin/dev --no-merges 2>/dev/null | head -20 || echo "(no linear history available)")"
-
           EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$EXISTING" -gt 0 ]; then
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
-            echo "Existing PR #$PR_NUM — updating title/body."
-            gh pr edit "$PR_NUM" --title "$TITLE" --body "$BODY"
+            gh pr edit "$PR_NUM" \
+              --title "${{ steps.suggest.outputs.title }}" \
+              --body "${{ steps.body.outputs.body }}"
+            echo "Updated PR #$PR_NUM"
           else
-            PR_URL=$(gh pr create --base main --head dev --title "$TITLE" --body "$BODY")
-            PR_NUM=$(echo "$PR_URL" | sed 's|.*/||')
-            echo "Created PR #$PR_NUM."
+            echo "No PR from dev→main yet. Suggested title:"
+            echo "  ${{ steps.suggest.outputs.title }}"
           fi
-          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
-
-      - name: Auto-merge PR
-        env:
-          GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUM=${{ steps.pr.outputs.number }}
-          echo "Merging PR #$PR_NUM..."
-          gh pr merge "$PR_NUM" --merge || {
-            echo "Merge failed — likely conflicts or checks not passing. PR is left open."
-          }
