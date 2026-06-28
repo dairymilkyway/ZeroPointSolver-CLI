@@ -44,61 +44,34 @@ def pause():
     input("\nPress Enter to continue...")
 
 
-# ── ASCII helpers (same style as cli.py) ─────────────
-
-def log(msg=""):
-    print(msg, flush=True)
-
-
-def header(title, width=54):
-    pad = (width - len(title) - 2) // 2
-    sep = "-" * (width - 2)
-    log()
-    log(f"  .{sep}.")
-    log(f"  |{' ' * pad} {title} {' ' * (width - pad - len(title) - 3)}|")
-    log(f"  '{sep}'")
-
-
-def field(key, val, w=20):
-    log(f"    {key:<{w}} {val}")
-
-
-def sep(width=54):
-    log(f"  {'-' * width}")
-
-
-def ok(msg):
-    log(f"   [+] {msg}")
-
-
-def warn(msg):
-    log(f"   [!] {msg}")
-
-
-def badge(status):
-    m = {"pending": "[PENDING]", "processing": "[  ..  ]",
-         "completed": "[ DONE  ]", "failed": "[ FAIL  ]",
-         "cancelled": "[ STOP  ]"}
-    return m.get(status, f"[{status.upper()}]")
-
-
-def progress_bar(p, t, w=20):
-    if t == 0:
-        return "[" + " " * w + "]"
-    filled = int(p / t * w)
-    return "[" + "#" * filled + "." * (w - filled) + "]"
+from theme import (
+    Style,
+    log, header, field, sep, ok, warn, err, info,
+    badge, progress_bar, truncate_path,
+)
 
 
 def watch_loop(job_id, interval=3):
+    st = Style.current()
     while True:
         d = client.get_status(job_id)
-        s = d["status"]
+        status = d["status"]
         p, t = d["processed"], d["total_accounts"]
-        ok_, already, fail = d.get("successful", 0), d.get("already_solved", 0), d.get("failed", 0)
+        ok_ = d.get("successful", 0)
+        already = d.get("already_solved", 0)
+        fail = d.get("failed", 0)
         charged = d.get("charged_credits", "?")
         bar = progress_bar(p, t)
-        line = f"    {badge(s)}  {bar}  {p:>4}/{t:<4}  +{ok_}  o{already}  x{fail}  ${charged}"
-        if s in ("completed", "failed", "cancelled"):
+        b = badge(status) if status != "processing" else st.cw("ACCENT", st.next_spinner())
+        line = (
+            f"    {b}  {bar}  "
+            f"{st.dim(f'{p:>4}/{t:<4}')}  "
+            f"{st.cw('SUCCESS', f'+{ok_}')} "
+            f"{st.cw('INFO', f'o{already}')} "
+            f"{st.cw('ERROR', f'x{fail}')}  "
+            f"{st.cw('ACCENT', f'${charged}')}"
+        )
+        if status in ("completed", "failed", "cancelled"):
             log(line)
             return d
         print(line, end="\r", flush=True)
@@ -106,14 +79,24 @@ def watch_loop(job_id, interval=3):
 
 
 def watch_loop_fu(job_id, interval=3):
+    st = Style.current()
     while True:
         d = fu_client.get_status(job_id)
-        s = d["status"]
+        status = d["status"]
         p, t = d["processed"], d["total_accounts"]
-        ok_, fail, other = d.get("successful", 0), d.get("failed", 0), d.get("other_failed", 0)
+        ok_ = d.get("successful", 0)
+        fail = d.get("failed", 0)
+        other = d.get("other_failed", 0)
         bar = progress_bar(p, t)
-        line = f"    {badge(s)}  {bar}  {p:>4}/{t:<4}  +{ok_}  x{fail}  o{other}"
-        if s in ("completed", "failed", "cancelled"):
+        b = badge(status) if status != "processing" else st.cw("ACCENT", st.next_spinner())
+        line = (
+            f"    {b}  {bar}  "
+            f"{st.dim(f'{p:>4}/{t:<4}')}  "
+            f"{st.cw('SUCCESS', f'+{ok_}')} "
+            f"{st.cw('ERROR', f'x{fail}')} "
+            f"{st.cw('INFO', f'o{other}')}"
+        )
+        if status in ("completed", "failed", "cancelled"):
             log(line)
             return d
         print(line, end="\r", flush=True)
@@ -472,14 +455,17 @@ def cmd_faceunlock():
 
 
 def sleep_range(lo=10, hi=60):
+    st = Style.current()
     t = random.randint(lo, hi)
-    bar = progress_bar(0, t)
-    log(f"    Sleeping {t}s  {bar}")
-    for i in range(t):
-        if i % 5 == 0 and i > 0:
-            print(f"    Sleeping {t}s  {progress_bar(i, t)}", end="\r", flush=True)
+    for i in range(1, t + 1):
+        bar = progress_bar(i, t)
+        remaining = t - i
+        line = f"    {st.cw('INFO', st.icons.bullet)} Sleeping  {bar}  {st.dim(f'{remaining}s')}"
+        if i == t:
+            log(line)
+        else:
+            print(line, end="\r", flush=True)
         time.sleep(1)
-    log(f"    Sleeping {t}s  {progress_bar(t, t)}")
 
 
 def _raw_submit(client, text, label, captcha_type="ingame"):
@@ -687,27 +673,30 @@ def main():
 
     while True:
         clear()
-        log("  .------------------------------------------.")
-        log("  |        ZeroPoint  ZeroSolver             |")
+        st = Style.current()
+        I = st.icons
+        ac = lambda t: st.cw("ACCENT", t)
+        log(f"  {ac(I.TL)}{ac(I.H * 42)}{ac(I.TR)}")
+        log(f"  {ac(I.V)}        ZeroPoint  ZeroSolver             {ac(I.V)}")
         if _credits_cache:
             b = _credits_cache
-            log(f"  |  ZS  {b['effective']:>6.2f}  cr    Res  {b['reserved']:>5.2f}           |")
+            log(f"  {ac(I.V)}  ZS  {b['effective']:>6.2f}  cr    Res  {b['reserved']:>5.2f}           {ac(I.V)}")
         if _fu_balance_cache and fu_client:
-            log(f"  |  FU  ${_fu_balance_cache['effective']:>5.2f}                              |")
-        log("  |------------------------------------------|")
-        log("  |  1. Credits                              |")
-        log("  |  2. Submit Accounts                      |")
-        log("  |  3. Job Status                           |")
-        log("  |  4. Download Results                     |")
-        log("  |  5. Cancel Job                           |")
-        log("  |  6. Active Jobs                          |")
+            log(f"  {ac(I.V)}  FU  ${_fu_balance_cache['effective']:>5.2f}                              {ac(I.V)}")
+        log(f"  {ac(I.LT)}{ac(I.H * 42)}{ac(I.RT)}")
+        log(f"  {ac(I.V)}  1. Credits                              {ac(I.V)}")
+        log(f"  {ac(I.V)}  2. Submit Accounts                      {ac(I.V)}")
+        log(f"  {ac(I.V)}  3. Job Status                           {ac(I.V)}")
+        log(f"  {ac(I.V)}  4. Download Results                     {ac(I.V)}")
+        log(f"  {ac(I.V)}  5. Cancel Job                           {ac(I.V)}")
+        log(f"  {ac(I.V)}  6. Active Jobs                          {ac(I.V)}")
         if fu_client:
-            log("  |  7. Face Unlock                          |")
-        log("  |  8. Auto-Solve (FU + captcha-lock)       |")
-        log("  |  9. Auto-Solve Captcha Only (in-game)    |")
-        log("  |------------------------------------------|")
-        log("  |  0. Exit                                 |")
-        log("  '------------------------------------------'")
+            log(f"  {ac(I.V)}  7. Face Unlock                          {ac(I.V)}")
+        log(f"  {ac(I.V)}  8. Auto-Solve (FU + captcha-lock)       {ac(I.V)}")
+        log(f"  {ac(I.V)}  9. Auto-Solve Captcha Only (in-game)    {ac(I.V)}")
+        log(f"  {ac(I.LT)}{ac(I.H * 42)}{ac(I.RT)}")
+        log(f"  {ac(I.V)}  0. Exit                                 {ac(I.V)}")
+        log(f"  {ac(I.BL)}{ac(I.H * 42)}{ac(I.BR)}")
         choice = input("  Choice [0-9]: ").strip()
         dispatch = {
             "1": cmd_credits,
