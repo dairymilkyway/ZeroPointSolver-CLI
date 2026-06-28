@@ -19,10 +19,7 @@ jobs:
       - name: Generate suggested title
         id: suggest
         run: |
-          # ── type from recent conventional commits ──
           TYPE=$(git log origin/main..HEAD --format="%s" | grep -oE '^(feat|fix|refactor|chore|docs|test|style|perf)' | head -1 || echo "chore")
-
-          # ── scope from changed files ──────────────
           FILES=$(git diff origin/main...HEAD --name-only)
           SCOPE="general"
           for kw in "theme" "cli" "api" "config" "faceunlock" "main"; do
@@ -31,62 +28,34 @@ jobs:
               break
             fi
           done
-
-          # ── description ───────────────────────────
           FILE_COUNT=$(echo "$FILES" | wc -l)
-          STAT=$(git diff origin/main...HEAD --stat -- | tail -1)
           BEST=$(git log origin/main..HEAD --format="%s" | head -1)
-
           if echo "$BEST" | grep -qE '^(feat|fix|refactor|chore|docs|test|style|perf)'; then
             DESC=$(echo "$BEST" | sed 's/^[^(]*([^)]*)\?:\s*//; s/^[^:]*:\s*//')
           else
             DESC="$FILE_COUNT file(s) changed"
           fi
-
           TITLE="${TYPE}(${SCOPE}): ${DESC}"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
-      - name: Build PR body
-        id: body
-        run: |
-          BODY="## Suggestion
-
-**${{ steps.suggest.outputs.title }}**
-
-### Changes
-
-\`\`\`
-$(git diff origin/main...HEAD --stat --)
-\`\`\`
-
-### Commits
-
-$(git log origin/main..HEAD --oneline --no-merges 2>/dev/null | head -30 || echo "—")
-
-> Title generated from recent commits. Edit before merging if needed.
-"
-          BODY="${BODY//'%'/'%25'}"
-          BODY="${BODY//$'\n'/'%0A'}"
-          BODY="${BODY//$'\r'/'%0D'}"
-          echo "body=$BODY" >> "$GITHUB_OUTPUT"
-
       - name: Print suggestion
+        env:
+          TITLE: ${{ steps.suggest.outputs.title }}
         run: |
           echo "### Suggested PR title" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${{ steps.suggest.outputs.title }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$TITLE\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update existing PR or show hint
         env:
           GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.suggest.outputs.title }}
         run: |
           EXISTING=$(gh pr list --head dev --base main --state open --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$EXISTING" -gt 0 ]; then
             PR_NUM=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
-            gh pr edit "$PR_NUM" \
-              --title "${{ steps.suggest.outputs.title }}" \
-              --body "${{ steps.body.outputs.body }}"
-            echo "Updated PR #$PR_NUM"
+            gh pr edit "$PR_NUM" --title "$TITLE"
+            echo "Updated PR #$PR_NUM title to: $TITLE"
           else
             echo "No PR from dev→main yet. Suggested title:"
-            echo "  ${{ steps.suggest.outputs.title }}"
+            echo "  $TITLE"
           fi
