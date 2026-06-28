@@ -34,7 +34,7 @@ jobs:
       - name: Create or update PR
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
         run: |
           TITLE="Auto PR: dev → main ($(date +'%Y-%m-%d'))"
           BODY="Automated PR created on push to \`dev\`.
@@ -56,7 +56,7 @@ jobs:
 
       - name: Auto-merge PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_CREATOR_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR_NUM=${{ steps.pr.outputs.number }}
           echo "Merging PR #$PR_NUM..."
