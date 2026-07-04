@@ -53,8 +53,20 @@ from theme import (
 
 def watch_loop(job_id, interval=3):
     st = Style.current()
+    retries = 0
     while True:
-        d = client.get_status(job_id)
+        try:
+            d = client.get_status(job_id)
+            retries = 0
+        except Exception as e:
+            retries += 1
+            if retries >= 5:
+                warn(f"Status check failed 5 times — aborting watch: {e}")
+                return {"status": "error", "processed": 0, "total_accounts": 0,
+                        "successful": 0, "already_solved": 0, "failed": 0}
+            warn(f"Status check error (retry {retries}/5): {e}")
+            time.sleep(interval)
+            continue
         status = d["status"]
         p, t = d["processed"], d["total_accounts"]
         ok_ = d.get("successful", 0)
@@ -80,8 +92,20 @@ def watch_loop(job_id, interval=3):
 
 def watch_loop_fu(job_id, interval=3):
     st = Style.current()
+    retries = 0
     while True:
-        d = fu_client.get_status(job_id)
+        try:
+            d = fu_client.get_status(job_id)
+            retries = 0
+        except Exception as e:
+            retries += 1
+            if retries >= 5:
+                warn(f"Status check failed 5 times — aborting watch: {e}")
+                return {"status": "error", "processed": 0, "total_accounts": 0,
+                        "successful": 0, "failed": 0, "other_failed": 0}
+            warn(f"Status check error (retry {retries}/5): {e}")
+            time.sleep(interval)
+            continue
         status = d["status"]
         p, t = d["processed"], d["total_accounts"]
         ok_ = d.get("successful", 0)
@@ -487,6 +511,14 @@ def _raw_submit(client, text, label, captcha_type="ingame"):
                 time.sleep(w)
                 continue
             raise
+        except (KeyError, TypeError, ValueError) as e:
+            warn(f"Unexpected response ({e}) — retrying...")
+            time.sleep(random.randint(10, 30))
+            continue
+
+
+class _CleanExit(Exception):
+    pass
 
 
 def cmd_autosolve():
@@ -500,8 +532,7 @@ def cmd_autosolve():
     cycle = 0
 
     def sigint(sig, frame):
-        log("\n   [!] Returning to menu.")
-        raise SystemExit(0)
+        raise _CleanExit()
     signal.signal(signal.SIGINT, sigint)
 
     while True:
@@ -564,14 +595,19 @@ def cmd_autosolve():
             if zr["status"] != "completed":
                 warn(f"Captcha solve ended: {zr['status']}")
 
+        except _CleanExit:
+            log("\n   [!] Returning to menu.")
+            return
         except SystemExit as e:
-            if "Returning to menu" in str(e):
-                return
             warn(str(e))
             sleep_range(30, 60)
             continue
         except requests.exceptions.RequestException as e:
             warn(f"Network: {e}")
+            sleep_range(30, 60)
+            continue
+        except (KeyError, TypeError, ValueError) as e:
+            warn(f"Unexpected error: {e}")
             sleep_range(30, 60)
             continue
 
@@ -594,8 +630,7 @@ def cmd_autosolve_captcha():
     cycle = 0
 
     def sigint(sig, frame):
-        log("\n   [!] Returning to menu.")
-        raise SystemExit(0)
+        raise _CleanExit()
     signal.signal(signal.SIGINT, sigint)
 
     while True:
@@ -638,14 +673,19 @@ def cmd_autosolve_captcha():
             if zr["status"] != "completed":
                 warn(f"Captcha solve ended: {zr['status']}")
 
+        except _CleanExit:
+            log("\n   [!] Returning to menu.")
+            return
         except SystemExit as e:
-            if "Returning to menu" in str(e):
-                return
             warn(str(e))
             sleep_range(30, 60)
             continue
         except requests.exceptions.RequestException as e:
             warn(f"Network: {e}")
+            sleep_range(30, 60)
+            continue
+        except (KeyError, TypeError, ValueError) as e:
+            warn(f"Unexpected error: {e}")
             sleep_range(30, 60)
             continue
 

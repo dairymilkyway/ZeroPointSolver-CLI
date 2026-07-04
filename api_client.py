@@ -19,9 +19,19 @@ class ZeroSolverClient:
 
     def _request(self, method, path, **kwargs):
         url = f"{API_BASE}{path}"
+        kwargs.setdefault("timeout", 30)
         for attempt in range(MAX_RETRIES + 1):
             try:
                 r = requests.request(method, url, headers=self.headers, **kwargs)
+            except requests.exceptions.ConnectionError as e:
+                raise SystemExit(f"Connection error: {e}")
+            except requests.exceptions.Timeout:
+                if attempt < MAX_RETRIES:
+                    wait = 5 * (attempt + 1)
+                    print(f"  Request timed out. Retrying in {wait}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                    time.sleep(wait)
+                    continue
+                raise SystemExit("Error: Request timed out — server may be down")
             except requests.exceptions.RequestException as e:
                 raise SystemExit(f"Network error: {e}")
 
@@ -84,7 +94,7 @@ class ZeroSolverClient:
 
     def download(self, job_id, filename):
         url = f"{API_BASE}/download/{job_id}/{filename}"
-        r = requests.get(url, headers=self.headers)
+        r = requests.get(url, headers=self.headers, timeout=30)
         if r.status_code == 404:
             return None
         r.raise_for_status()
