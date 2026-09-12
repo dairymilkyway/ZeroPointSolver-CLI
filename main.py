@@ -365,6 +365,147 @@ def cmd_cancel():
     pause()
 
 
+def cmd_force_cancel():
+    clear()
+    header("FORCE CANCEL")
+    st = Style.current()
+
+    # Collect active ZeroSolver jobs
+    zs_jobs = []
+    try:
+        data = client.get_active()
+        zs_jobs = data.get("jobs", [])
+    except Exception as e:
+        warn(f"Could not fetch ZeroSolver jobs: {e}")
+
+    # Collect active FaceUnlock jobs
+    fu_jobs = []
+    if fu_client:
+        try:
+            fu_data = fu_client.get_active()
+            fu_jobs = fu_data.get("jobs", [])
+        except Exception:
+            pass
+
+    total = len(zs_jobs) + len(fu_jobs)
+    if total == 0:
+        log("    No active jobs to cancel.")
+        pause()
+        return
+
+    # Display all active jobs with index numbers
+    idx = 1
+    zs_map = {}   # index -> job_id
+    fu_map = {}   # index -> job_id
+
+    if zs_jobs:
+        log(f"    {st.cw('ACCENT', 'ZeroSolver Jobs')}")
+        log(f"    {'#':<4} {'Job ID':<38} {'Status':<12}  {'Prog':>7}   Results")
+        sep(68)
+        for j in zs_jobs:
+            prog = f"{j['processed']}/{j['total_accounts']}"
+            res = f"+{j['successful']} o{j['already_solved']} x{j['failed']}"
+            log(f"    {st.cw('ACCENT', str(idx)):<14} {j['job_id']:<38} {j['status']:<12}  {prog:>7}   {res}")
+            zs_map[idx] = j['job_id']
+            idx += 1
+
+    if fu_jobs:
+        if zs_jobs:
+            log()
+        log(f"    {st.cw('INFO', 'Face Unlock Jobs')}")
+        log(f"    {'#':<4} {'Job ID':<38} {'Status':<12}  {'Prog':>7}   Results")
+        sep(68)
+        for j in fu_jobs:
+            q = "P" if j.get("priority") else "S"
+            prog = f"{j['processed']}/{j['total_accounts']}"
+            res = f"+{j['successful']} x{j.get('failed', 0)}"
+            log(f"    {st.cw('ACCENT', str(idx)):<14} {j['job_id']:<38} {q} {j['status']:<10}  {prog:>7}   {res}")
+            fu_map[idx] = j['job_id']
+            idx += 1
+
+    log()
+    log("    Enter job numbers to cancel (e.g. 1,3), 'all' to cancel everything,")
+    log("    or press Enter to abort.")
+    choice = input("  Cancel: ").strip().lower()
+
+    if not choice:
+        log("    Aborted.")
+        pause()
+        return
+
+    # Resolve which jobs to cancel
+    if choice == "all":
+        targets_zs = list(zs_map.values())
+        targets_fu = list(fu_map.values())
+    else:
+        targets_zs = []
+        targets_fu = []
+        try:
+            nums = [int(x.strip()) for x in choice.split(",") if x.strip()]
+        except ValueError:
+            warn("Invalid input — enter numbers, comma-separated, or 'all'.")
+            pause()
+            return
+        for n in nums:
+            if n in zs_map:
+                targets_zs.append(zs_map[n])
+            elif n in fu_map:
+                targets_fu.append(fu_map[n])
+            else:
+                warn(f"  #{n} not found — skipped.")
+
+    if not targets_zs and not targets_fu:
+        warn("Nothing selected.")
+        pause()
+        return
+
+    # Confirm
+    log()
+    total_sel = len(targets_zs) + len(targets_fu)
+    confirm = input(f"  Force-cancel {total_sel} job(s)? This cannot be undone. [y/N]: ").strip().lower()
+    if confirm != "y":
+        log("    Aborted.")
+        pause()
+        return
+
+    log()
+    cancelled = 0
+    failed_ids = []
+
+    for job_id in targets_zs:
+        try:
+            client.cancel(job_id)
+            ok(f"  ZS  {job_id}")
+            cancelled += 1
+        except Exception as e:
+            err(f"  ZS  {job_id}  FAILED: {e}")
+            failed_ids.append(job_id)
+
+    for job_id in targets_fu:
+        try:
+            fu_client.cancel(job_id)
+            ok(f"  FU  {job_id}")
+            cancelled += 1
+        except Exception as e:
+            err(f"  FU  {job_id}  FAILED: {e}")
+            failed_ids.append(job_id)
+
+    sep()
+    field("Cancelled", cancelled)
+    if failed_ids:
+        field("Failed", len(failed_ids))
+
+    # Refresh balances after cancel (reserved credits get released)
+    refresh_balance()
+    if _credits_cache:
+        field("ZS Available", f"{_credits_cache['effective']:.2f} cr")
+    if fu_client:
+        refresh_fu_balance()
+        if _fu_balance_cache:
+            field("FU Available", f"${_fu_balance_cache['effective']:.2f}")
+    pause()
+
+
 def cmd_active():
     clear()
     header("ACTIVE JOBS")
@@ -729,28 +870,30 @@ def main():
         log(f"  {ac(I.V)}  3. Job Status                           {ac(I.V)}")
         log(f"  {ac(I.V)}  4. Download Results                     {ac(I.V)}")
         log(f"  {ac(I.V)}  5. Cancel Job                           {ac(I.V)}")
-        log(f"  {ac(I.V)}  6. Active Jobs                          {ac(I.V)}")
+        log(f"  {ac(I.V)}  6. Force Cancel All / By Number         {ac(I.V)}")
+        log(f"  {ac(I.V)}  7. Active Jobs                          {ac(I.V)}")
         if fu_client:
-            log(f"  {ac(I.V)}  7. Face Unlock                          {ac(I.V)}")
-        log(f"  {ac(I.V)}  8. Auto-Solve (FU + captcha-lock)       {ac(I.V)}")
-        log(f"  {ac(I.V)}  9. Auto-Solve Captcha Only (in-game)    {ac(I.V)}")
+            log(f"  {ac(I.V)}  8. Face Unlock                          {ac(I.V)}")
+        log(f"  {ac(I.V)}  9. Auto-Solve (FU + captcha-lock)       {ac(I.V)}")
+        log(f"  {ac(I.V)}  A. Auto-Solve Captcha Only (in-game)    {ac(I.V)}")
         log(f"  {ac(I.LT)}{ac(I.H * 42)}{ac(I.RT)}")
         log(f"  {ac(I.V)}  0. Exit                                 {ac(I.V)}")
         log(f"  {ac(I.BL)}{ac(I.H * 42)}{ac(I.BR)}")
-        choice = input("  Choice [0-9]: ").strip()
+        choice = input("  Choice [0-9,A]: ").strip().lower()
         dispatch = {
             "1": cmd_credits,
             "2": cmd_submit,
             "3": cmd_status,
             "4": cmd_download,
             "5": cmd_cancel,
-            "6": cmd_active,
+            "6": cmd_force_cancel,
+            "7": cmd_active,
             "0": lambda: sys.exit(0),
         }
         if fu_client:
-            dispatch["7"] = cmd_faceunlock
-        dispatch["8"] = cmd_autosolve
-        dispatch["9"] = cmd_autosolve_captcha
+            dispatch["8"] = cmd_faceunlock
+        dispatch["9"] = cmd_autosolve
+        dispatch["a"] = cmd_autosolve_captcha
         fn = dispatch.get(choice)
         if fn:
             fn()
